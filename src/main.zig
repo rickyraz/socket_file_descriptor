@@ -1,5 +1,6 @@
 const std = @import("std");
 const linux = std.os.linux;
+const websocket_demo = @import("websocket_demo.zig");
 
 const DemoError = error{SyscallFailed};
 
@@ -24,6 +25,7 @@ pub fn main(init: std.process.Init) !void {
     try simulateNonBlockingRead();
     try simulateEpollReadiness();
     try simulateOnePersistentUpstreamTo100kConsumers();
+    try websocket_demo.run();
 
     std.debug.print(
         \\
