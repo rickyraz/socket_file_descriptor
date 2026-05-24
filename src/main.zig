@@ -1,13 +1,17 @@
 const std = @import("std");
 const linux = std.os.linux;
 const websocket_demo = @import("websocket_demo.zig");
+const Io = std.Io;
 
 const DemoError = error{SyscallFailed};
 
 pub fn main(init: std.process.Init) !void {
-    _ = init;
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_file_writer: Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
+    const out = &stdout_file_writer.interface;
+    defer out.flush() catch {};
 
-    std.debug.print(
+    try out.print(
         \\Belajar socket sebagai file descriptor di Linux, pakai Zig.
         \\
         \\Catatan awal:
@@ -17,17 +21,17 @@ pub fn main(init: std.process.Init) !void {
         \\
     , .{});
 
-    try showInitialFdTable();
-    try simulateRegularFileAndSocketFd();
-    try simulateSocketpairReadWrite();
-    try simulateTcpAcceptCreatesNewFd();
-    try simulateSocketIsNotSeekable();
-    try simulateNonBlockingRead();
-    try simulateEpollReadiness();
-    try simulateOnePersistentUpstreamTo100kConsumers();
-    try websocket_demo.run();
+    try showInitialFdTable(out);
+    try simulateRegularFileAndSocketFd(out);
+    try simulateSocketpairReadWrite(out);
+    try simulateTcpAcceptCreatesNewFd(out);
+    try simulateSocketIsNotSeekable(out);
+    try simulateNonBlockingRead(out);
+    try simulateEpollReadiness(out);
+    try simulateOnePersistentUpstreamTo100kConsumers(out);
+    try websocket_demo.run(out);
 
-    std.debug.print(
+    try out.print(
         \\
         \\Selesai.
         \\Coba juga dari shell:
@@ -41,16 +45,16 @@ pub fn main(init: std.process.Init) !void {
     , .{});
 }
 
-fn showInitialFdTable() !void {
+fn showInitialFdTable(out: *Io.Writer) !void {
     // Official docs:
     // - /proc/<pid>/fd: https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html
     // - readlink(2): https://man7.org/linux/man-pages/man2/readlink.2.html
     //
     // Simulasi ini membaca symlink /proc/self/fd/<n>.
     // "self" artinya process program ini sendiri.
-    std.debug.print("\n== 1. Fd table process ini lewat /proc/self/fd ==\n", .{});
-    std.debug.print("Ini bukan semua kernel object di mesin, hanya fd milik process program ini.\n", .{});
-    try printKnownFdLinks(0, 10);
+    try out.print("\n== 1. Fd table process ini lewat /proc/self/fd ==\n", .{});
+    try out.print("Ini bukan semua kernel object di mesin, hanya fd milik process program ini.\n", .{});
+    try printKnownFdLinks(out, 0, 10);
 
     // printKnownFdLinks(0, 10) berarti kita cek:
     // /proc/self/fd/0, /proc/self/fd/1, ..., /proc/self/fd/9.
@@ -64,32 +68,32 @@ fn showInitialFdTable() !void {
     // yang sama, misalnya /dev/pts/5.
 }
 
-fn simulateRegularFileAndSocketFd() !void {
+fn simulateRegularFileAndSocketFd(out: *Io.Writer) !void {
     // Official docs:
     // - open(2): https://man7.org/linux/man-pages/man2/open.2.html
     // - socket(2): https://man7.org/linux/man-pages/man2/socket.2.html
     //
     // Simulasi ini membandingkan fd untuk file biasa dan fd untuk socket.
     // Dua-duanya cuma angka kecil di process, tapi object kernel di belakangnya beda.
-    std.debug.print("\n== 2. File biasa dan socket sama-sama dapat angka fd ==\n", .{});
+    try out.print("\n== 2. File biasa dan socket sama-sama dapat angka fd ==\n", .{});
 
     const file_fd = try sysOpenReadOnly("/dev/null");
     defer sysClose(file_fd);
-    std.debug.print("open(\"/dev/null\") -> fd {d}\n", .{file_fd});
+    try out.print("open(\"/dev/null\") -> fd {d}\n", .{file_fd});
 
     const socket_fd = try sysSocket(linux.AF.INET, linux.SOCK.STREAM, 0);
     defer sysClose(socket_fd);
-    std.debug.print("socket(AF_INET, SOCK_STREAM, 0) -> fd {d}\n", .{socket_fd});
+    try out.print("socket(AF_INET, SOCK_STREAM, 0) -> fd {d}\n", .{socket_fd});
 
-    std.debug.print(
+    try out.print(
         \\Perhatikan: file fd dan socket fd sama-sama integer.
         \\Bedanya ada di object kernel yang ditunjuk oleh integer itu.
         \\
     , .{});
-    try printKnownFdLinks(0, @as(i32, @max(file_fd, socket_fd)) + 2);
+    try printKnownFdLinks(out, 0, @as(i32, @max(file_fd, socket_fd)) + 2);
 }
 
-fn simulateSocketpairReadWrite() !void {
+fn simulateSocketpairReadWrite(out: *Io.Writer) !void {
     // Official docs:
     // - socketpair(2): https://man7.org/linux/man-pages/man2/socketpair.2.html
     // - read(2): https://man7.org/linux/man-pages/man2/read.2.html
@@ -101,31 +105,31 @@ fn simulateSocketpairReadWrite() !void {
     //   fd 3 <---- stream data ----> fd 4
     //
     // Kalau kita write ke satu sisi, sisi lain bisa read data itu.
-    std.debug.print("\n== 3. socketpair: dua socket fd yang saling tersambung ==\n", .{});
+    try out.print("\n== 3. socketpair: dua socket fd yang saling tersambung ==\n", .{});
 
     var pair: [2]i32 = undefined;
     try checkNoValue(linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM, 0, &pair), "socketpair");
     defer sysClose(pair[0]);
     defer sysClose(pair[1]);
 
-    std.debug.print("socketpair() -> fd {d} dan fd {d}\n", .{ pair[0], pair[1] });
-    std.debug.print("Kita write ke fd {d}, lalu read dari fd {d}.\n", .{ pair[0], pair[1] });
+    try out.print("socketpair() -> fd {d} dan fd {d}\n", .{ pair[0], pair[1] });
+    try out.print("Kita write ke fd {d}, lalu read dari fd {d}.\n", .{ pair[0], pair[1] });
 
     const msg = "halo dari socket fd";
     _ = try sysWrite(pair[0], msg);
 
     var buf: [128]u8 = undefined;
     const n = try sysRead(pair[1], &buf);
-    std.debug.print("read(fd {d}) -> \"{s}\"\n", .{ pair[1], buf[0..n] });
+    try out.print("read(fd {d}) -> \"{s}\"\n", .{ pair[1], buf[0..n] });
 
-    std.debug.print(
+    try out.print(
         \\Poinnya: read/write tidak peduli ini file disk atau socket.
         \\Kernel melihat fd, mencari object di fd table process, lalu menjalankan operasi yang cocok.
         \\
     , .{});
 }
 
-fn simulateTcpAcceptCreatesNewFd() !void {
+fn simulateTcpAcceptCreatesNewFd(out: *Io.Writer) !void {
     // Official docs:
     // - socket(2): https://man7.org/linux/man-pages/man2/socket.2.html
     // - bind(2): https://man7.org/linux/man-pages/man2/bind.2.html
@@ -143,7 +147,7 @@ fn simulateTcpAcceptCreatesNewFd() !void {
     // client_fd adalah endpoint sisi client.
     // accepted_fd adalah endpoint sisi server untuk koneksi client itu.
     // listen_fd beda lagi: tugasnya hanya menunggu koneksi baru.
-    std.debug.print("\n== 4. TCP server: listen fd beda dari accepted client fd ==\n", .{});
+    try out.print("\n== 4. TCP server: listen fd beda dari accepted client fd ==\n", .{});
 
     const listen_fd = try sysSocket(linux.AF.INET, linux.SOCK.STREAM, 0);
     defer sysClose(listen_fd);
@@ -154,25 +158,25 @@ fn simulateTcpAcceptCreatesNewFd() !void {
 
     const actual_addr = try sysGetSockName(listen_fd);
     const port = std.mem.bigToNative(u16, actual_addr.port);
-    std.debug.print("listen fd {d} bind ke 127.0.0.1:{d}\n", .{ listen_fd, port });
+    try out.print("listen fd {d} bind ke 127.0.0.1:{d}\n", .{ listen_fd, port });
 
     const client_fd = try sysSocket(linux.AF.INET, linux.SOCK.STREAM, 0);
     defer sysClose(client_fd);
 
     var connect_addr = ipv4Address(127, 0, 0, 1, port);
     try sysConnect(client_fd, &connect_addr);
-    std.debug.print("client socket connect() -> fd {d}\n", .{client_fd});
+    try out.print("client socket connect() -> fd {d}\n", .{client_fd});
 
     const accepted_fd = try sysAccept(listen_fd);
     defer sysClose(accepted_fd);
-    std.debug.print("accept(listen_fd {d}) -> accepted fd {d}\n", .{ listen_fd, accepted_fd });
+    try out.print("accept(listen_fd {d}) -> accepted fd {d}\n", .{ listen_fd, accepted_fd });
 
     _ = try sysWrite(client_fd, "ping via TCP");
     var buf: [128]u8 = undefined;
     const n = try sysRead(accepted_fd, &buf);
-    std.debug.print("server read dari accepted fd {d} -> \"{s}\"\n", .{ accepted_fd, buf[0..n] });
+    try out.print("server read dari accepted fd {d} -> \"{s}\"\n", .{ accepted_fd, buf[0..n] });
 
-    std.debug.print(
+    try out.print(
         \\Mental model:
         \\- listen_fd hanya menunggu koneksi baru.
         \\- accepted_fd adalah socket baru untuk satu koneksi TCP tertentu.
@@ -181,7 +185,7 @@ fn simulateTcpAcceptCreatesNewFd() !void {
     , .{});
 }
 
-fn simulateSocketIsNotSeekable() !void {
+fn simulateSocketIsNotSeekable(out: *Io.Writer) !void {
     // Official docs:
     // - lseek(2): https://man7.org/linux/man-pages/man2/lseek.2.html
     // - socket(7): https://man7.org/linux/man-pages/man7/socket.7.html
@@ -189,7 +193,7 @@ fn simulateSocketIsNotSeekable() !void {
     // Socket adalah stream/network endpoint.
     // Dia tidak punya "posisi byte saat ini" seperti file di disk,
     // jadi lseek(fd, 0, SEEK_SET) tidak masuk akal untuk socket.
-    std.debug.print("\n== 5. Socket bukan file biasa: lseek gagal ==\n", .{});
+    try out.print("\n== 5. Socket bukan file biasa: lseek gagal ==\n", .{});
 
     var pair: [2]i32 = undefined;
     try checkNoValue(linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM, 0, &pair), "socketpair");
@@ -199,14 +203,14 @@ fn simulateSocketIsNotSeekable() !void {
     const rc = linux.lseek(pair[0], 0, linux.SEEK.SET);
     const err = linux.errno(rc);
     if (err == .SUCCESS) {
-        std.debug.print("lseek di socket ternyata sukses, ini tidak umum dan tidak diharapkan.\n", .{});
+        try out.print("lseek di socket ternyata sukses, ini tidak umum dan tidak diharapkan.\n", .{});
     } else {
-        std.debug.print("lseek(fd {d}, 0, SEEK_SET) gagal dengan errno {s}\n", .{ pair[0], @tagName(err) });
-        std.debug.print("Alasannya: socket adalah stream endpoint, bukan file disk yang punya posisi byte.\n", .{});
+        try out.print("lseek(fd {d}, 0, SEEK_SET) gagal dengan errno {s}\n", .{ pair[0], @tagName(err) });
+        try out.print("Alasannya: socket adalah stream endpoint, bukan file disk yang punya posisi byte.\n", .{});
     }
 }
 
-fn simulateNonBlockingRead() !void {
+fn simulateNonBlockingRead(out: *Io.Writer) !void {
     // Official docs:
     // - fcntl(2): https://man7.org/linux/man-pages/man2/fcntl.2.html
     // - socket(7): https://man7.org/linux/man-pages/man7/socket.7.html
@@ -215,7 +219,7 @@ fn simulateNonBlockingRead() !void {
     //
     // O_NONBLOCK membuat operasi seperti read tidak menggantung thread.
     // Kalau belum ada data, read mengembalikan errno EAGAIN.
-    std.debug.print("\n== 6. O_NONBLOCK: read tidak menggantung kalau belum ada data ==\n", .{});
+    try out.print("\n== 6. O_NONBLOCK: read tidak menggantung kalau belum ada data ==\n", .{});
 
     var pair: [2]i32 = undefined;
     try checkNoValue(linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM, 0, &pair), "socketpair");
@@ -223,25 +227,25 @@ fn simulateNonBlockingRead() !void {
     defer sysClose(pair[1]);
 
     try setNonBlocking(pair[1]);
-    std.debug.print("fd {d} diberi flag O_NONBLOCK memakai fcntl(F_GETFL/F_SETFL)\n", .{pair[1]});
+    try out.print("fd {d} diberi flag O_NONBLOCK memakai fcntl(F_GETFL/F_SETFL)\n", .{pair[1]});
 
     var buf: [16]u8 = undefined;
     const rc = linux.read(pair[1], &buf, buf.len);
     const err = linux.errno(rc);
     if (err == .AGAIN) {
-        std.debug.print("read(fd {d}) saat belum ada data -> EAGAIN, thread tidak macet.\n", .{pair[1]});
+        try out.print("read(fd {d}) saat belum ada data -> EAGAIN, thread tidak macet.\n", .{pair[1]});
     } else if (err == .SUCCESS) {
-        std.debug.print("read(fd {d}) sukses tak terduga, bytes: {d}\n", .{ pair[1], rc });
+        try out.print("read(fd {d}) sukses tak terduga, bytes: {d}\n", .{ pair[1], rc });
     } else {
-        std.debug.print("read(fd {d}) gagal dengan errno {s}\n", .{ pair[1], @tagName(err) });
+        try out.print("read(fd {d}) gagal dengan errno {s}\n", .{ pair[1], @tagName(err) });
     }
 
     _ = try sysWrite(pair[0], "ok");
     const n = try sysRead(pair[1], &buf);
-    std.debug.print("setelah fd lain write, read(fd {d}) -> \"{s}\"\n", .{ pair[1], buf[0..n] });
+    try out.print("setelah fd lain write, read(fd {d}) -> \"{s}\"\n", .{ pair[1], buf[0..n] });
 }
 
-fn simulateEpollReadiness() !void {
+fn simulateEpollReadiness(out: *Io.Writer) !void {
     // Official docs:
     // - epoll(7): https://man7.org/linux/man-pages/man7/epoll.7.html
     // - epoll_create(2): https://man7.org/linux/man-pages/man2/epoll_create.2.html
@@ -251,7 +255,7 @@ fn simulateEpollReadiness() !void {
     // epoll adalah mekanisme kernel untuk memonitor banyak fd.
     // Aplikasi tidur di epoll_wait(), lalu kernel membangunkan ketika
     // ada fd yang siap dibaca/ditulis.
-    std.debug.print("\n== 7. epoll: kernel memberi tahu fd mana yang siap dibaca ==\n", .{});
+    try out.print("\n== 7. epoll: kernel memberi tahu fd mana yang siap dibaca ==\n", .{});
 
     var pair: [2]i32 = undefined;
     try checkNoValue(linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM, 0, &pair), "socketpair");
@@ -267,19 +271,19 @@ fn simulateEpollReadiness() !void {
     };
     try checkNoValue(linux.epoll_ctl(epoll_fd, linux.EPOLL.CTL_ADD, pair[1], &event), "epoll_ctl ADD");
 
-    std.debug.print("epoll fd {d} memonitor socket fd {d}\n", .{ epoll_fd, pair[1] });
+    try out.print("epoll fd {d} memonitor socket fd {d}\n", .{ epoll_fd, pair[1] });
     _ = try sysWrite(pair[0], "event!");
 
     var events: [4]linux.epoll_event = undefined;
     const ready_count = try checkCount(linux.epoll_wait(epoll_fd, &events, events.len, 1000), "epoll_wait");
-    std.debug.print("epoll_wait() -> {d} event siap\n", .{ready_count});
+    try out.print("epoll_wait() -> {d} event siap\n", .{ready_count});
 
     for (events[0..ready_count]) |ready| {
-        std.debug.print("event: fd {d} siap dibaca, flags=0x{x}\n", .{ ready.data.fd, ready.events });
+        try out.print("event: fd {d} siap dibaca, flags=0x{x}\n", .{ ready.data.fd, ready.events });
     }
 }
 
-fn simulateOnePersistentUpstreamTo100kConsumers() !void {
+fn simulateOnePersistentUpstreamTo100kConsumers(out: *Io.Writer) !void {
     // Official docs:
     // - getrlimit(2): https://man7.org/linux/man-pages/man2/getrlimit.2.html
     // - /proc/<pid>/limits: https://man7.org/linux/man-pages/man5/proc_pid_limits.5.html
@@ -293,7 +297,7 @@ fn simulateOnePersistentUpstreamTo100kConsumers() !void {
     // - Bisa secara arsitektur event loop.
     // - Tapi 100k consumer tetap berarti kira-kira 100k connected socket fd.
     // - Jadi kita cek dulu RLIMIT_NOFILE, lalu buat miniatur epoll dengan 8 consumer.
-    std.debug.print("\n== 8. Simulasi 1 koneksi persistent -> 100k consumer ==\n", .{});
+    try out.print("\n== 8. Simulasi 1 koneksi persistent -> 100k consumer ==\n", .{});
 
     const target_consumers: u64 = 100_000;
     const upstream_connection: u64 = 1;
@@ -316,7 +320,7 @@ fn simulateOnePersistentUpstreamTo100kConsumers() !void {
         safety_margin;
 
     const limit = try sysGetNoFileLimit();
-    std.debug.print(
+    try out.print(
         \\Target consumer persistent : {d}
         \\Perkiraan fd minimal       : {d}
         \\RLIMIT_NOFILE soft/hard    : {d}/{d}
@@ -324,9 +328,9 @@ fn simulateOnePersistentUpstreamTo100kConsumers() !void {
     , .{ target_consumers, fd_needed, limit.cur, limit.max });
 
     if (limit.cur >= fd_needed) {
-        std.debug.print("Secara limit fd process: mungkin, karena soft limit cukup.\n", .{});
+        try out.print("Secara limit fd process: mungkin, karena soft limit cukup.\n", .{});
     } else {
-        std.debug.print(
+        try out.print(
             \\Secara limit fd process: belum mungkin di setting sekarang.
             \\Naikkan limit dulu, misalnya konsepnya:
             \\  ulimit -n 200000
@@ -335,7 +339,7 @@ fn simulateOnePersistentUpstreamTo100kConsumers() !void {
         , .{});
     }
 
-    std.debug.print(
+    try out.print(
         \\Tapi fd bukan satu-satunya biaya.
         \\100k koneksi juga butuh memory kernel untuk socket object, TCP state,
         \\send buffer, receive buffer, plus memory aplikasi untuk state tiap consumer.
@@ -379,17 +383,17 @@ fn simulateOnePersistentUpstreamTo100kConsumers() !void {
     var events: [sample_consumers]linux.epoll_event = undefined;
     const ready_count = try checkCount(linux.epoll_wait(epoll_fd, &events, events.len, 100), "epoll_wait consumers");
 
-    std.debug.print(
+    try out.print(
         \\Miniatur: {d} consumer fd didaftarkan ke epoll.
         \\Hanya 2 consumer mengirim data, epoll melaporkan {d} fd siap.
         \\
     , .{ sample_consumers, ready_count });
 
     for (events[0..ready_count]) |ready| {
-        std.debug.print("consumer server-fd {d} siap dibaca\n", .{ready.data.fd});
+        try out.print("consumer server-fd {d} siap dibaca\n", .{ready.data.fd});
     }
 
-    std.debug.print(
+    try out.print(
         \\Kesimpulan:
         \\- 100k persistent consumer memungkinkan secara arsitektur event loop.
         \\- Syaratnya fd limit, memory, kernel/network tuning, dan backpressure benar.
@@ -398,7 +402,7 @@ fn simulateOnePersistentUpstreamTo100kConsumers() !void {
     , .{});
 }
 
-fn printKnownFdLinks(start: i32, end_exclusive: i32) !void {
+fn printKnownFdLinks(out: *Io.Writer, start: i32, end_exclusive: i32) !void {
     var fd = start;
     while (fd < end_exclusive) : (fd += 1) {
         var path_buf: [64]u8 = undefined;
@@ -425,9 +429,9 @@ fn printKnownFdLinks(start: i32, end_exclusive: i32) !void {
         var link_buf: [256]u8 = undefined;
         const rc = linux.readlink(path.ptr, &link_buf, link_buf.len);
         switch (linux.errno(rc)) {
-            .SUCCESS => std.debug.print("fd {d} -> {s}\n", .{ fd, link_buf[0..rc] }),
+            .SUCCESS => try out.print("fd {d} -> {s}\n", .{ fd, link_buf[0..rc] }),
             .NOENT, .BADF => {},
-            else => |err| std.debug.print("fd {d} -> readlink gagal: {s}\n", .{ fd, @tagName(err) }),
+            else => |err| try out.print("fd {d} -> readlink gagal: {s}\n", .{ fd, @tagName(err) }),
         }
     }
 }

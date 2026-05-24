@@ -1,5 +1,6 @@
 const std = @import("std");
 const linux = std.os.linux;
+const Io = std.Io;
 
 const DemoError = error{
     SyscallFailed,
@@ -10,7 +11,7 @@ const DemoError = error{
 
 const websocket_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-pub fn run() !void {
+pub fn run(out: *Io.Writer) !void {
     // Official protocol docs:
     // - RFC 6455 WebSocket Protocol: https://www.rfc-editor.org/rfc/rfc6455
     // - Opening handshake: https://www.rfc-editor.org/rfc/rfc6455#section-1.3
@@ -31,7 +32,7 @@ pub fn run() !void {
     // Setelah handshake HTTP Upgrade sukses, fd yang sama tetap dipakai.
     // Yang berubah hanya cara kita menafsirkan bytes-nya: dari HTTP text menjadi
     // WebSocket frame.
-    std.debug.print("\n== 9. WebSocket mini: HTTP Upgrade lalu frame di atas socket fd ==\n", .{});
+    try out.print("\n== 9. WebSocket mini: HTTP Upgrade lalu frame di atas socket fd ==\n", .{});
 
     var pair: [2]i32 = undefined;
     try checkNoValue(linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM, 0, &pair), "socketpair websocket");
@@ -40,19 +41,19 @@ pub fn run() !void {
 
     const client_fd = pair[0];
     const server_fd = pair[1];
-    std.debug.print("socketpair untuk demo WebSocket -> client fd {d}, server fd {d}\n", .{ client_fd, server_fd });
+    try out.print("socketpair untuk demo WebSocket -> client fd {d}, server fd {d}\n", .{ client_fd, server_fd });
 
-    try clientSendHandshake(client_fd);
-    const accept_value = try serverReadHandshakeAndReply(server_fd);
-    try clientReadHandshakeResponse(client_fd, accept_value);
+    try clientSendHandshake(out, client_fd);
+    const accept_value = try serverReadHandshakeAndReply(out, server_fd);
+    try clientReadHandshakeResponse(out, client_fd, accept_value);
 
-    try clientSendMaskedTextFrame(client_fd, "halo websocket");
-    try serverReadClientTextFrame(server_fd);
+    try clientSendMaskedTextFrame(out, client_fd, "halo websocket");
+    try serverReadClientTextFrame(out, server_fd);
 
-    try serverSendTextFrame(server_fd, "halo balik dari server");
-    try clientReadServerTextFrame(client_fd);
+    try serverSendTextFrame(out, server_fd, "halo balik dari server");
+    try clientReadServerTextFrame(out, client_fd);
 
-    std.debug.print(
+    try out.print(
         \\Ringkasnya:
         \\- WebSocket mulai sebagai HTTP request biasa dengan header Upgrade.
         \\- Server membalas 101 Switching Protocols.
@@ -62,7 +63,7 @@ pub fn run() !void {
     , .{});
 }
 
-fn clientSendHandshake(client_fd: i32) !void {
+fn clientSendHandshake(out: *Io.Writer, client_fd: i32) !void {
     // Sec-WebSocket-Key ini contoh dari RFC 6455.
     // Server nanti menghitung:
     //
@@ -81,10 +82,10 @@ fn clientSendHandshake(client_fd: i32) !void {
         "\r\n";
 
     _ = try sysWrite(client_fd, request);
-    std.debug.print("client write HTTP Upgrade request ke fd {d}\n", .{client_fd});
+    try out.print("client write HTTP Upgrade request ke fd {d}\n", .{client_fd});
 }
 
-fn serverReadHandshakeAndReply(server_fd: i32) ![28]u8 {
+fn serverReadHandshakeAndReply(out: *Io.Writer, server_fd: i32) ![28]u8 {
     var request_buf: [1024]u8 = undefined;
     const request_len = try sysRead(server_fd, &request_buf);
     const request = request_buf[0..request_len];
@@ -104,12 +105,12 @@ fn serverReadHandshakeAndReply(server_fd: i32) ![28]u8 {
     );
 
     _ = try sysWrite(server_fd, response);
-    std.debug.print("server read handshake dari fd {d}, lalu balas 101 Switching Protocols\n", .{server_fd});
-    std.debug.print("server hitung Sec-WebSocket-Accept: {s}\n", .{&accept_value});
+    try out.print("server read handshake dari fd {d}, lalu balas 101 Switching Protocols\n", .{server_fd});
+    try out.print("server hitung Sec-WebSocket-Accept: {s}\n", .{&accept_value});
     return accept_value;
 }
 
-fn clientReadHandshakeResponse(client_fd: i32, expected_accept: [28]u8) !void {
+fn clientReadHandshakeResponse(out: *Io.Writer, client_fd: i32, expected_accept: [28]u8) !void {
     var response_buf: [1024]u8 = undefined;
     const response_len = try sysRead(client_fd, &response_buf);
     const response = response_buf[0..response_len];
@@ -121,39 +122,39 @@ fn clientReadHandshakeResponse(client_fd: i32, expected_accept: [28]u8) !void {
         return DemoError.InvalidFrame;
     }
 
-    std.debug.print("client read response 101; koneksi sekarang resmi jadi WebSocket\n", .{});
+    try out.print("client read response 101; koneksi sekarang resmi jadi WebSocket\n", .{});
 }
 
-fn clientSendMaskedTextFrame(client_fd: i32, text: []const u8) !void {
+fn clientSendMaskedTextFrame(out: *Io.Writer, client_fd: i32, text: []const u8) !void {
     var frame_buf: [256]u8 = undefined;
     const frame = try buildTextFrame(&frame_buf, text, true);
     _ = try sysWrite(client_fd, frame);
 
-    std.debug.print("client kirim masked text frame: \"{s}\"\n", .{text});
+    try out.print("client kirim masked text frame: \"{s}\"\n", .{text});
 }
 
-fn serverReadClientTextFrame(server_fd: i32) !void {
+fn serverReadClientTextFrame(out: *Io.Writer, server_fd: i32) !void {
     var frame_buf: [256]u8 = undefined;
     const frame_len = try sysRead(server_fd, &frame_buf);
     const payload = try decodeTextFrame(frame_buf[0..frame_len], true);
 
-    std.debug.print("server decode frame dari client -> \"{s}\"\n", .{payload});
+    try out.print("server decode frame dari client -> \"{s}\"\n", .{payload});
 }
 
-fn serverSendTextFrame(server_fd: i32, text: []const u8) !void {
+fn serverSendTextFrame(out: *Io.Writer, server_fd: i32, text: []const u8) !void {
     var frame_buf: [256]u8 = undefined;
     const frame = try buildTextFrame(&frame_buf, text, false);
     _ = try sysWrite(server_fd, frame);
 
-    std.debug.print("server kirim unmasked text frame: \"{s}\"\n", .{text});
+    try out.print("server kirim unmasked text frame: \"{s}\"\n", .{text});
 }
 
-fn clientReadServerTextFrame(client_fd: i32) !void {
+fn clientReadServerTextFrame(out: *Io.Writer, client_fd: i32) !void {
     var frame_buf: [256]u8 = undefined;
     const frame_len = try sysRead(client_fd, &frame_buf);
     const payload = try decodeTextFrame(frame_buf[0..frame_len], false);
 
-    std.debug.print("client decode frame dari server -> \"{s}\"\n", .{payload});
+    try out.print("client decode frame dari server -> \"{s}\"\n", .{payload});
 }
 
 fn findHeaderValue(headers: []const u8, comptime name: []const u8) ![]const u8 {
@@ -177,7 +178,7 @@ fn computeAcceptValue(key: []const u8) [28]u8 {
 
     var out: [28]u8 = undefined;
     const encoded = std.base64.standard.Encoder.encode(&out, &digest);
-    std.debug.assert(encoded.len == out.len );
+    std.debug.assert(encoded.len == out.len);
     return out;
 }
 
